@@ -1,194 +1,180 @@
-import type { AgentEvent, ConfirmationDecision } from "../src/core/events";
+import type { Evento } from "../src/core/eventos";
 
 const log = document.getElementById("log") as HTMLElement;
-const empty = document.getElementById("empty") as HTMLElement;
+const vacio = document.getElementById("empty") as HTMLElement;
 const meta = document.getElementById("meta") as HTMLElement;
 const form = document.getElementById("composer") as HTMLFormElement;
 const input = document.getElementById("input") as HTMLTextAreaElement;
-const sendButton = document.getElementById("send") as HTMLButtonElement;
-const resetButton = document.getElementById("reset") as HTMLButtonElement;
+const enviar = document.getElementById("send") as HTMLButtonElement;
+const reiniciar = document.getElementById("reset") as HTMLButtonElement;
 
-// Cada carga de la página abre una conversación nueva: el historial vive en el servidor.
+// Cada carga de la página abre una conversación nueva; el historial vive en el servidor.
 let sessionId = crypto.randomUUID();
-let modelLabel = "";
-let busy = false;
-let currentText: HTMLElement | null = null;
-const toolCards = new Map<string, HTMLDetailsElement>();
-/** Confirmaciones del turno actual; se envían juntas cuando todas tienen decisión. */
-let pendingIds: string[] = [];
-const decisions = new Map<string, ConfirmationDecision>();
+let ocupado = false;
+let etiquetaModelo = "";
+let textoActual: HTMLElement | null = null;
+let ultimoAsistente: HTMLElement | null = null;
+const tarjetas = new Map<string, HTMLDetailsElement>();
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string) {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, clase?: string, texto?: string) {
+  const nodo = document.createElement(tag);
+  if (clase) nodo.className = clase;
+  if (texto !== undefined) nodo.textContent = texto;
+  return nodo;
 }
 
-function append(node: HTMLElement) {
-  empty.hidden = true;
-  log.append(node);
+function agregar(nodo: HTMLElement) {
+  vacio.hidden = true;
+  log.append(nodo);
   log.scrollTop = log.scrollHeight;
 }
 
-function json(value: unknown): string {
-  return JSON.stringify(value, null, 2);
+function json(valor: unknown): string {
+  return JSON.stringify(valor, null, 2);
 }
 
-function setBusy(value: boolean) {
-  busy = value;
-  const locked = busy || pendingIds.length > 0;
-  input.disabled = locked;
-  sendButton.disabled = locked;
-  if (!locked) input.focus();
+function setOcupado(valor: boolean) {
+  ocupado = valor;
+  input.disabled = valor;
+  enviar.disabled = valor;
+  if (!valor) input.focus();
 }
 
-function toolCard(id: string, name: string, args: unknown): HTMLDetailsElement {
-  const card = el("details", "tool");
-  const summary = el("summary");
-  summary.append(el("span", undefined, "🔧"), el("span", "name", name), el("span", "badge", "ejecutando…"));
-  const body = el("div", "body");
-  body.append(el("h4", undefined, "Entrada"), el("pre", undefined, json(args)));
-  card.append(summary, body);
-  toolCards.set(id, card);
-  append(card);
-  return card;
+function tarjetaHerramienta(id: string, nombre: string, args: unknown) {
+  const tarjeta = el("details", "tool");
+  const resumen = el("summary");
+  resumen.append(el("span", "name", nombre), el("span", "badge", "ejecutando…"));
+  const cuerpo = el("div", "body");
+  cuerpo.append(el("h4", undefined, "Argumentos"), el("pre", undefined, json(args)));
+  tarjeta.append(resumen, cuerpo);
+  tarjetas.set(id, tarjeta);
+  agregar(tarjeta);
 }
 
-function setBadge(card: HTMLElement, text: string, kind: "ok" | "error" | "warn") {
-  const badge = card.querySelector(".badge") as HTMLElement;
-  badge.textContent = text;
-  badge.className = `badge ${kind}`;
+function marcarResultado(e: Extract<Evento, { tipo: "resultado" }>) {
+  const tarjeta = tarjetas.get(e.id);
+  if (!tarjeta) return;
+  const insignia = tarjeta.querySelector(".badge") as HTMLElement;
+  const [texto, clase] = e.pideConfirmacion ? ["requiere confirmación", "warn"] : e.ok ? ["ok", "ok"] : ["error", "error"];
+  insignia.textContent = texto;
+  insignia.className = `badge ${clase}`;
+  if (e.pideConfirmacion) tarjeta.classList.add("awaiting");
+  const cuerpo = tarjeta.querySelector(".body") as HTMLElement;
+  cuerpo.append(
+    el("h4", undefined, "Resultado"),
+    el("p", "summary-line", e.resumen),
+    el("pre", undefined, json(e.resultado)),
+  );
 }
 
-function askConfirmation(id: string, reason: string) {
-  const card = toolCards.get(id);
-  if (!card) return;
-  card.classList.add("awaiting");
-  card.open = true;
-  setBadge(card, "requiere autorización", "warn");
-  pendingIds.push(id);
-
+/** CA3: el turno terminó con una pregunta de confirmación; se resalta y se ofrecen respuestas rápidas. */
+function resaltarConfirmacion() {
   const panel = el("div", "confirm");
-  panel.append(el("p", undefined, `⚠️ ${reason}`));
-  const actions = el("div", "actions");
-  const approve = el("button", "approve", "Aprobar");
-  const reject = el("button", "reject", "Rechazar");
-  approve.type = reject.type = "button";
-  const decide = (approved: boolean) => {
-    const comment = approved ? undefined : (prompt("¿Motivo del rechazo? (opcional)") ?? undefined);
-    decisions.set(id, { id, approved, comment: comment || undefined });
-    panel.replaceChildren(el("p", undefined, approved ? "✅ Aprobado por ti" : "⛔ Rechazado por ti"));
-    card.classList.remove("awaiting");
-    if (pendingIds.every((pid) => decisions.has(pid))) void submitDecisions();
+  panel.append(el("p", undefined, "⚠️ El agente necesita tu confirmación para continuar."));
+  const acciones = el("div", "actions");
+  const si = el("button", undefined, "Confirmo");
+  const no = el("button", "reject", "No, cancela");
+  si.type = no.type = "button";
+  const responder = (texto: string) => {
+    panel.querySelectorAll("button").forEach((b) => {
+      b.disabled = true;
+    });
+    void enviarMensaje(texto);
   };
-  approve.onclick = () => decide(true);
-  reject.onclick = () => decide(false);
-  actions.append(approve, reject);
-  panel.append(actions);
-  card.append(panel);
+  si.onclick = () => responder("Confirmo.");
+  no.onclick = () => responder("No, cancela esa acción.");
+  acciones.append(si, no);
+  panel.append(acciones);
+  if (ultimoAsistente) ultimoAsistente.classList.add("awaiting");
+  agregar(panel);
 }
 
-async function submitDecisions() {
-  const payload = pendingIds.map((pid) => decisions.get(pid)!);
-  pendingIds = [];
-  decisions.clear();
-  await runTurn("/api/confirm", { sessionId, decisions: payload });
-}
-
-function handle(event: AgentEvent) {
-  switch (event.type) {
-    case "text":
-      if (!currentText) {
-        currentText = el("div", "msg assistant");
-        append(currentText);
+function manejar(e: Evento) {
+  switch (e.tipo) {
+    case "texto":
+      if (!textoActual) {
+        textoActual = el("div", "msg assistant");
+        ultimoAsistente = textoActual;
+        agregar(textoActual);
       }
-      currentText.textContent += event.delta;
+      textoActual.textContent += e.delta;
       log.scrollTop = log.scrollHeight;
       break;
-    case "tool_call":
-      currentText = null;
-      toolCard(event.id, event.name, event.input);
+    case "llamada":
+      textoActual = null;
+      tarjetaHerramienta(e.id, e.nombre, e.args);
       break;
-    case "tool_result": {
-      const card = toolCards.get(event.id);
-      if (!card) break;
-      setBadge(card, event.isError ? "error" : "ok", event.isError ? "error" : "ok");
-      const body = card.querySelector(".body") as HTMLElement;
-      body.append(el("h4", undefined, "Resultado"), el("pre", undefined, json(event.output)));
-      if (event.isError) card.open = true;
-      break;
-    }
-    case "confirmation_required":
-      currentText = null;
-      askConfirmation(event.id, event.reason);
+    case "resultado":
+      marcarResultado(e);
       break;
     case "error":
-      currentText = null;
-      append(el("div", "msg error", event.message));
+      textoActual = null;
+      agregar(el("div", "msg error", e.mensaje));
       break;
-    case "turn_end": {
-      const u = event.usage;
-      meta.textContent = `${modelLabel} · último turno: ${u.modelCalls} llamadas, ${u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens} tokens de entrada (${u.cacheReadTokens} desde caché), ${u.outputTokens} de salida`;
+    case "fin_turno": {
+      const u = e.uso;
+      meta.textContent = `${etiquetaModelo} · último turno: ${u.llamadasModelo} llamadas al modelo, ${u.tokensEntrada + u.tokensCache} tokens de entrada (${u.tokensCache} en caché), ${u.tokensSalida} de salida · sesión: ${u.tokensSesion}`;
+      if (e.necesitaConfirmacion) resaltarConfirmacion();
       break;
     }
   }
 }
 
-async function runTurn(url: string, body: unknown) {
-  setBusy(true);
-  currentText = null;
-  const typing = el("div", "typing", "El agente está trabajando…");
-  append(typing);
+async function enviarMensaje(texto: string) {
+  agregar(el("div", "msg user", texto));
+  setOcupado(true);
+  textoActual = null;
+  ultimoAsistente = null;
+  const pensando = el("div", "typing", "El agente está pensando…");
+  agregar(pensando);
   try {
-    const res = await fetch(url, {
+    const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ sessionId, message: texto }),
     });
     if (!res.ok || !res.body) {
-      const data = await res.json().catch(() => ({}));
-      handle({ type: "error", message: data.error ?? `Error HTTP ${res.status}` });
+      const datos = (await res.json().catch(() => ({}))) as { error?: string };
+      manejar({ tipo: "error", mensaje: datos.error ?? `Error HTTP ${res.status}` });
       return;
     }
-    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    const lector = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await lector.read();
       if (done) break;
       buffer += value;
-      let sep = buffer.indexOf("\n\n");
-      while (sep !== -1) {
-        const frame = buffer.slice(0, sep);
-        buffer = buffer.slice(sep + 2);
-        if (frame.startsWith("data: ")) {
-          handle(JSON.parse(frame.slice(6)) as AgentEvent);
-          log.append(typing);
+      let corte = buffer.indexOf("\n\n");
+      while (corte !== -1) {
+        const trama = buffer.slice(0, corte);
+        buffer = buffer.slice(corte + 2);
+        if (trama.startsWith("data: ")) {
+          manejar(JSON.parse(trama.slice(6)) as Evento);
+          log.append(pensando);
         }
-        sep = buffer.indexOf("\n\n");
+        corte = buffer.indexOf("\n\n");
       }
     }
   } catch (err) {
-    handle({ type: "error", message: `Se perdió la conexión: ${String(err)}` });
+    manejar({ tipo: "error", mensaje: `Se perdió la conexión con el servidor: ${String(err)}` });
   } finally {
-    typing.remove();
-    setBusy(false);
+    pensando.remove();
+    setOcupado(false);
   }
 }
 
-form.addEventListener("submit", (e) => {
-  e.preventDefault();
-  const text = input.value.trim();
-  if (!text || busy || pendingIds.length > 0) return;
+form.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const texto = input.value.trim();
+  if (!texto || ocupado) return;
   input.value = "";
   input.style.height = "";
-  append(el("div", "msg user", text));
-  void runTurn("/api/chat", { sessionId, message: text });
+  void enviarMensaje(texto);
 });
 
-input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
+input.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && !ev.shiftKey) {
+    ev.preventDefault();
     form.requestSubmit();
   }
 });
@@ -198,27 +184,20 @@ input.addEventListener("input", () => {
   input.style.height = `${input.scrollHeight}px`;
 });
 
-resetButton.addEventListener("click", async () => {
-  if (busy) return;
-  await fetch("/api/reset", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId }),
-  });
+reiniciar.addEventListener("click", async () => {
+  if (ocupado) return;
+  await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
   sessionId = crypto.randomUUID();
-  pendingIds = [];
-  decisions.clear();
-  toolCards.clear();
-  log.replaceChildren(empty);
-  empty.hidden = false;
-  setBusy(false);
+  tarjetas.clear();
+  log.replaceChildren(vacio);
+  vacio.hidden = false;
+  setOcupado(false);
 });
 
-fetch("/api/info")
-  .then((r) => r.json())
-  .then((info: { model: string; tools: { name: string }[] }) => {
-    modelLabel = `Modelo ${info.model}`;
-    meta.textContent = `${modelLabel} · ${info.tools.length} herramientas: ${info.tools.map((t) => t.name).join(", ")}`;
+Promise.all([fetch("/api/health").then((r) => r.json()), fetch("/api/herramientas").then((r) => r.json())])
+  .then(([salud, lista]: [{ provider: string; model: string }, { nombre: string }[]]) => {
+    etiquetaModelo = `${salud.provider} · ${salud.model}`;
+    meta.textContent = `${etiquetaModelo} · ${lista.length} herramientas: ${lista.map((h) => h.nombre).join(", ")}`;
   })
   .catch(() => {
     meta.textContent = "No se pudo cargar la información del agente";

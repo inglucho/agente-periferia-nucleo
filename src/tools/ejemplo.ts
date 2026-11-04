@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { defineTool } from "../core/tool";
+import { type Contexto, fallo, ok, pideConfirmacion } from "../core/herramientas";
 
 /**
- * Dominio de ejemplo para probar el núcleo de punta a punta mientras llega el reto.
- * Se reemplaza por las herramientas del reto elegido (p. ej. `src/tools/oc.ts`).
+ * Dominio de ejemplo para probar el núcleo de punta a punta. Cada reto lo reemplaza
+ * por su archivo (`oc.ts`, `contratos.ts`, `proveedor.ts`). El modelo ve estas
+ * herramientas como `ejemplo_consultar` y `ejemplo_aprobar`.
  */
 
 interface Registro {
@@ -13,45 +14,43 @@ interface Registro {
   estado: "pendiente" | "aprobado";
 }
 
-const registros = new Map<string, Registro>([
-  ["R-001", { codigo: "R-001", descripcion: "Licencias de software", monto: 1_200_000, estado: "pendiente" }],
-  ["R-002", { codigo: "R-002", descripcion: "Mantenimiento de equipos", monto: 8_500_000, estado: "pendiente" }],
-]);
+const registros = new Map<string, Registro>();
 
-/** Por encima de este monto, aprobar un registro exige confirmación humana. */
+export function reiniciarRegistros(): void {
+  registros.clear();
+  registros.set("R-001", { codigo: "R-001", descripcion: "Licencias de software", monto: 1_200_000, estado: "pendiente" });
+  registros.set("R-002", { codigo: "R-002", descripcion: "Mantenimiento de equipos", monto: 8_500_000, estado: "pendiente" });
+}
+reiniciarRegistros();
+
+/** Por encima de este monto, aprobar exige confirmación humana. */
 export const TOPE_SIN_CONFIRMACION = 5_000_000;
 
-export const consultarRegistro = defineTool({
-  name: "consultar_registro",
+export const consultar = {
   description: "Consulta un registro por su código y devuelve su descripción, monto y estado.",
-  input: z.object({
+  args: {
     codigo: z.string().describe("Código del registro, p. ej. R-001"),
-  }),
-  run: ({ codigo }) => registros.get(codigo.toUpperCase()) ?? { encontrado: false, codigo },
-});
+  },
+  async execute(args: { codigo: string }, _ctx: Contexto): Promise<string> {
+    const registro = registros.get(args.codigo.toUpperCase());
+    return registro ? ok(registro) : fallo(`No existe el registro ${args.codigo}`);
+  },
+};
 
-export const aprobarRegistro = defineTool({
-  name: "aprobar_registro",
-  description:
-    "Marca un registro como aprobado. Los montos altos requieren confirmación humana antes de ejecutarse.",
-  input: z.object({
+export const aprobar = {
+  description: "Aprueba un registro; si el monto supera el tope, primero pide confirmación al usuario.",
+  args: {
     codigo: z.string().describe("Código del registro a aprobar"),
-    justificacion: z.string().min(5).describe("Motivo de la aprobación"),
-  }),
-  confirm: ({ codigo }) => {
-    const registro = registros.get(codigo.toUpperCase());
-    if (registro && registro.monto > TOPE_SIN_CONFIRMACION) {
-      return `El monto (${registro.monto.toLocaleString("es-CO")}) supera el tope de ${TOPE_SIN_CONFIRMACION.toLocaleString("es-CO")}.`;
+    confirmado: z.boolean().optional().describe("true solo si el usuario confirmó explícitamente la aprobación"),
+  },
+  async execute(args: { codigo: string; confirmado?: boolean }, _ctx: Contexto): Promise<string> {
+    const registro = registros.get(args.codigo.toUpperCase());
+    if (!registro) return fallo(`No existe el registro ${args.codigo}`);
+    if (registro.estado === "aprobado") return fallo(`El registro ${registro.codigo} ya estaba aprobado`);
+    if (registro.monto > TOPE_SIN_CONFIRMACION && !args.confirmado) {
+      return pideConfirmacion(`el monto ${registro.monto} supera el tope de ${TOPE_SIN_CONFIRMACION}`, registro);
     }
-    return null;
-  },
-  run: ({ codigo, justificacion }) => {
-    const registro = registros.get(codigo.toUpperCase());
-    if (!registro) throw new Error(`No existe el registro ${codigo}`);
-    if (registro.estado === "aprobado") throw new Error(`El registro ${codigo} ya estaba aprobado`);
     registro.estado = "aprobado";
-    return { ...registro, justificacion };
+    return ok(registro);
   },
-});
-
-export const herramientas = [consultarRegistro, aprobarRegistro];
+};

@@ -258,3 +258,21 @@ button.reject {
   color: var(--muted);
   font-size: 13px;
 }
+
+.msg.assistant.awaiting {
+  border: 2px solid var(--warn-border);
+  background: var(--warn-bg);
+}
+
+.confirm {
+  align-self: stretch;
+  border: 2px solid var(--warn-border);
+  border-radius: 10px;
+  background: var(--warn-bg);
+}
+
+.summary-line {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}

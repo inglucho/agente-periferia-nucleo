@@ -1,34 +1,35 @@
 # Agente Periferia (prueba técnica)
 
-Agente conversacional en TypeScript + Bun para la prueba técnica de IA de Periferia IT Group. El núcleo (ciclo del agente, chat web, servidor) es independiente del reto; cada reto aporta su prompt y sus herramientas.
+Agente conversacional en TypeScript + Bun para la prueba técnica de IA de Periferia IT Group. El PRD de cada reto (sección 6) fija la arquitectura: respetar nombres de archivo, contrato de herramientas y API.
 
 ## Comandos
 
-- `bun install`: instala dependencias
-- `bun run dev`: servidor con recarga en caliente en http://localhost:3000 (requiere `ANTHROPIC_API_KEY` para el chat)
-- `bun test`: tests del ciclo del agente con un modelo guionizado (sin API)
-- `bun demo.ts`: verificación determinista de las herramientas (sin API)
-- `bun run typecheck`: verificación de tipos
+- `bun run dev`: servidor con recarga en http://localhost:3000 (el chat requiere `LLM_API_KEY`)
+- `bun run demo.ts`: verificación determinista de las herramientas, sin modelo
+- `bun test`: ciclo del agente con adaptador LLM guionizado
+- `bun run typecheck`: tipos
 
-Antes de cada commit: `bun run typecheck && bun test && bun demo.ts`.
+Antes de cada commit: `bun run typecheck && bun test && bun run demo.ts`.
 
 ## Estructura
 
-- `agent/prompt.md`: system prompt. Es lo único que se edita para cambiar el comportamiento conversacional.
-- `src/tools/<dominio>.ts`: herramientas del reto, definidas con `defineTool` y zod. Son funciones puras sin dependencia del modelo.
-- `src/agente.ts`: conecta prompt + herramientas + modelo. Es el único archivo que cambia al pasar de un reto a otro.
-- `src/core/`: núcleo genérico (ciclo del agente, llamada al modelo, sesiones, eventos SSE). No debe importar nada de `src/tools/`.
-- `web/`: chat en TypeScript sin framework, empaquetado por Bun desde `index.html`.
-- `demo.ts`: un caso por cada caso de prueba del reto, con su resultado esperado.
+- `agent/prompt.md`: comportamiento. `src/knowledge/*.md`: conocimiento del proceso. `src/tools/<dominio>.ts`: ejecución.
+- `src/dominio.ts`: único archivo que conecta el dominio (import de herramientas + prefijo).
+- `src/core/`: ciclo del agente, contrato de herramientas, confirmación, sesiones, bitácora. Sin dependencias de un proveedor LLM ni de un dominio.
+- `src/llm/`: interfaz `AdaptadorLLM` y una implementación por proveedor.
+- `web/`: chat en TypeScript sin framework, empaquetado por Bun.
+
+## Contrato de herramientas (PRD 6.2)
+
+- Cada export es `{ description, args, execute(args, ctx) }`; el modelo la ve como `<archivo>_<export>`.
+- `args`: esquemas zod con `.describe()` en cada campo.
+- `execute` devuelve un string JSON con `ok(data)`, `fallo(error)` o `pideConfirmacion(motivo)` y **nunca lanza**.
+- Las acciones de escritura aceptan `confirmado?: boolean`; sin él devuelven `pideConfirmacion`.
 
 ## Convenciones
 
-- Todo el código, los comentarios y los mensajes al usuario van en español.
-- Las reglas de negocio (topes, validaciones, vigencias) viven en las herramientas, nunca en el prompt: así son deterministas y `demo.ts` las puede verificar.
-- Toda acción que escriba o registre algo declara `confirm` cuando la regla del PRD exige revisión humana.
-- Las herramientas devuelven datos estructurados; para errores esperados lanzan `Error` con un mensaje claro, y `executeTool` lo convierte en `is_error` para el modelo.
-- El historial de la sesión solo crece; no reescribir mensajes anteriores (rompe la caché y el razonamiento preservado del modelo).
-
-## Flujo de trabajo
-
+- Código, comentarios y mensajes en español. TypeScript sin `any`.
+- Las reglas de negocio viven en las herramientas, no en el prompt: así son deterministas y `demo.ts` las verifica.
+- El historial de la sesión solo crece; no reescribir mensajes anteriores.
+- Ninguna clave en el código, el repo, el front ni los logs: solo `LLM_API_KEY` en el entorno.
 - Nunca hacer commit en `main`: cada cambio va en una rama `feat/…`, `fix/…` o `docs/…` y entra por pull request.

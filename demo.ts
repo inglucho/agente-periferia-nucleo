@@ -1,90 +1,51 @@
 /**
- * Verificación determinista: ejecuta las herramientas directamente, sin modelo de
- * lenguaje, y compara cada resultado con lo esperado. Sale con código 1 si algo falla.
+ * Verificación sin modelo de lenguaje: llama directamente a las herramientas y
+ * compara cada resultado con lo esperado. Sale con código 1 si algo no coincide.
  *
- *   bun demo.ts
+ *   bun run demo.ts
  *
- * Mientras llega el reto usa el dominio de ejemplo; luego cada caso de prueba del
- * reto (sol-001…, msg-001…) se convierte en un caso de esta lista.
+ * Plantilla del núcleo: cada reto la reescribe con sus casos (sol-001…, msg-001…).
  */
-import { aprobarRegistro, consultarRegistro } from "./src/tools/ejemplo";
-import { executeTool, type AnyTool } from "./src/core/tool";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
+import { config } from "./src/config";
+import { leerResultado } from "./src/core/herramientas";
+import { aprobar, consultar, reiniciarRegistros } from "./src/tools/ejemplo";
 
-interface Caso {
+const ctx = { directory: config.directorio, sessionId: "demo" };
+
+interface Paso {
   nombre: string;
-  tool: AnyTool;
-  input: unknown;
-  /** Qué debe ocurrir: resultado esperado (parcial), error esperado o confirmación requerida. */
-  espera: { ok: Record<string, unknown> } | { error: string } | { confirmacion: true };
+  ejecutar: () => Promise<string>;
+  espera: "ok" | "error" | "confirmacion";
 }
 
-const casos: Caso[] = [
+const pasos: Paso[] = [
+  { nombre: "Consulta un registro existente", ejecutar: () => consultar.execute({ codigo: "R-001" }, ctx), espera: "ok" },
+  { nombre: "Consulta un registro inexistente", ejecutar: () => consultar.execute({ codigo: "R-999" }, ctx), espera: "error" },
+  { nombre: "Aprueba un monto bajo sin confirmación", ejecutar: () => aprobar.execute({ codigo: "R-001" }, ctx), espera: "ok" },
+  { nombre: "No permite aprobar dos veces", ejecutar: () => aprobar.execute({ codigo: "R-001" }, ctx), espera: "error" },
+  { nombre: "Un monto alto pide confirmación", ejecutar: () => aprobar.execute({ codigo: "R-002" }, ctx), espera: "confirmacion" },
   {
-    nombre: "Consulta un registro existente",
-    tool: consultarRegistro,
-    input: { codigo: "R-001" },
-    espera: { ok: { codigo: "R-001", estado: "pendiente" } },
-  },
-  {
-    nombre: "Consulta un registro inexistente",
-    tool: consultarRegistro,
-    input: { codigo: "R-999" },
-    espera: { ok: { encontrado: false } },
-  },
-  {
-    nombre: "Aprueba un monto bajo sin pedir confirmación",
-    tool: aprobarRegistro,
-    input: { codigo: "R-001", justificacion: "Renovación anual" },
-    espera: { ok: { estado: "aprobado" } },
-  },
-  {
-    nombre: "Un monto alto exige confirmación humana",
-    tool: aprobarRegistro,
-    input: { codigo: "R-002", justificacion: "Mantenimiento preventivo" },
-    espera: { confirmacion: true },
-  },
-  {
-    nombre: "Rechaza una entrada que no cumple el esquema",
-    tool: aprobarRegistro,
-    input: { codigo: "R-001", justificacion: "x" },
-    espera: { error: "Entrada inválida" },
-  },
-  {
-    nombre: "No permite aprobar dos veces",
-    tool: aprobarRegistro,
-    input: { codigo: "R-001", justificacion: "Intento duplicado" },
-    espera: { error: "ya estaba aprobado" },
+    nombre: "Con confirmación explícita, aprueba el monto alto",
+    ejecutar: () => aprobar.execute({ codigo: "R-002", confirmado: true }, ctx),
+    espera: "ok",
   },
 ];
 
-function contiene(actual: unknown, esperado: Record<string, unknown>): boolean {
-  if (typeof actual !== "object" || actual === null) return false;
-  return Object.entries(esperado).every(([k, v]) => (actual as Record<string, unknown>)[k] === v);
-}
+// Determinismo: se parte de `out/` vacío y del estado inicial de los datos.
+await rm(join(config.directorio, "out"), { recursive: true, force: true });
+reiniciarRegistros();
 
 let fallos = 0;
-for (const caso of casos) {
-  let ok: boolean;
-  let detalle: unknown;
-
-  if ("confirmacion" in caso.espera) {
-    const parsed = caso.tool.input.safeParse(caso.input);
-    const motivo = parsed.success ? caso.tool.confirm?.(parsed.data) : null;
-    ok = Boolean(motivo);
-    detalle = motivo ?? "no pidió confirmación";
-  } else {
-    const outcome = await executeTool(caso.tool, caso.input);
-    detalle = outcome.ok ? outcome.output : outcome.error;
-    ok =
-      "ok" in caso.espera
-        ? outcome.ok && contiene(outcome.output, caso.espera.ok)
-        : !outcome.ok && outcome.error.includes(caso.espera.error);
-  }
-
-  if (!ok) fallos++;
-  console.log(`${ok ? "✔" : "✘"} ${caso.nombre}`);
-  console.log(`    ${caso.tool.name}(${JSON.stringify(caso.input)}) → ${JSON.stringify(detalle)}`);
+for (const paso of pasos) {
+  const r = leerResultado(await paso.ejecutar());
+  const obtenido = r.confirmacion ? "confirmacion" : r.ok ? "ok" : "error";
+  const correcto = obtenido === paso.espera;
+  if (!correcto) fallos++;
+  console.log(`${correcto ? "✔" : "✘"} ${paso.nombre}  [esperado: ${paso.espera}, obtenido: ${obtenido}]`);
+  console.log(`    ${r.ok ? JSON.stringify(r.data) : r.error}`);
 }
 
-console.log(`\n${casos.length - fallos}/${casos.length} casos correctos`);
+console.log(`\n${pasos.length - fallos}/${pasos.length} pasos correctos`);
 process.exit(fallos === 0 ? 0 : 1);

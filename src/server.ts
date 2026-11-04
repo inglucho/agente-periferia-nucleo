@@ -1,93 +1,92 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import index from "../web/index.html";
-import { crearAgente, MODEL } from "./agente";
-import type { Agent, Session } from "./core/agent";
-import type { AgentEvent } from "./core/events";
-import { SessionStore } from "./core/sessions";
+import { config } from "./config";
+import { Agente } from "./core/agente";
+import { Bitacora } from "./core/bitacora";
+import type { Evento } from "./core/eventos";
+import { AlmacenSesiones } from "./core/sesiones";
+import { cargarSistema, herramientas } from "./dominio";
+import { crearAdaptador } from "./llm";
 
-const agent = await crearAgente();
-const sessions = new SessionStore();
-
-const ChatBody = z.object({ sessionId: z.string().min(1), message: z.string().min(1) });
-const ConfirmBody = z.object({
-  sessionId: z.string().min(1),
-  decisions: z.array(z.object({ id: z.string(), approved: z.boolean(), comment: z.string().optional() })),
+const agente = new Agente({
+  sistema: await cargarSistema(config.directorio),
+  herramientas,
+  llm: crearAdaptador(config),
+  directorio: config.directorio,
+  bitacora: new Bitacora(config.directorio),
+  maxIteraciones: config.maxIteraciones,
+  maxTokensSesion: config.maxTokensSesion,
 });
-const ResetBody = z.object({ sessionId: z.string().min(1) });
+const sesiones = new AlmacenSesiones();
 
-/** Ejecuta un turno del agente y transmite sus eventos al navegador por SSE. */
-function streamTurn(sessionId: string, run: (agent: Agent, session: Session, emit: (e: AgentEvent) => void) => Promise<void>) {
-  const session = sessions.acquire(sessionId);
-  if (!session) return Response.json({ error: "La sesión ya está procesando un turno." }, { status: 409 });
+const CuerpoChat = z.object({
+  sessionId: z.string().min(1).max(100),
+  message: z.string().trim().min(1).max(10_000),
+});
+
+/** POST /api/chat: ejecuta un turno y transmite sus eventos por SSE. */
+async function chat(req: Request): Promise<Response> {
+  const cuerpo = CuerpoChat.safeParse(await req.json().catch(() => null));
+  if (!cuerpo.success) return Response.json({ error: "Se espera { sessionId, message }." }, { status: 400 });
+  const { sessionId, message } = cuerpo.data;
+
+  const sesion = sesiones.reservar(sessionId);
+  if (!sesion) return Response.json({ error: "Esta conversación ya está procesando un mensaje." }, { status: 409 });
 
   const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
+  const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const send = (event: AgentEvent) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      const emitir = (e: Evento) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       // Mantiene viva la conexión mientras el modelo razona sin emitir texto.
-      const heartbeat = setInterval(() => controller.enqueue(encoder.encode(": ping\n\n")), 15_000);
+      const latido = setInterval(() => controller.enqueue(encoder.encode(": ping\n\n")), 15_000);
       try {
-        await run(agent, session, send);
-      } catch (err) {
-        console.error(err);
-        send({ type: "error", message: describeError(err) });
+        await agente.turno(sesion, message, emitir);
       } finally {
-        clearInterval(heartbeat);
-        sessions.release(sessionId);
+        clearInterval(latido);
+        sesiones.liberar(sessionId);
         controller.close();
       }
     },
   });
-  return new Response(body, {
+  return new Response(stream, {
     headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
   });
 }
 
-function describeError(err: unknown): string {
-  if (err instanceof Anthropic.AuthenticationError) return "Credenciales de Anthropic inválidas o ausentes.";
-  if (err instanceof Anthropic.RateLimitError) return "Límite de uso de la API alcanzado; intenta de nuevo en un momento.";
-  if (err instanceof Anthropic.APIError) return `Error de la API (${err.status}): ${err.message}`;
-  return err instanceof Error ? err.message : String(err);
+/** GET /api/sessions/:id: historial de la sesión, sin la respuesta cruda del proveedor. */
+function historial(id: string): Response {
+  const sesion = sesiones.obtener(id);
+  if (!sesion) return Response.json({ error: "Sesión no encontrada." }, { status: 404 });
+  const mensajes = sesion.mensajes.map((m) => (m.rol === "asistente" ? { ...m, nativo: undefined } : m));
+  return Response.json({
+    id: sesion.id,
+    esperandoConfirmacion: sesion.esperandoConfirmacion,
+    tokensUsados: sesion.tokensUsados,
+    mensajes,
+  });
 }
 
-const server = Bun.serve({
-  port: Number(process.env.PORT ?? 3000),
+const servidor = Bun.serve({
+  port: config.puerto,
   idleTimeout: 255,
   development: process.env.NODE_ENV !== "production",
   routes: {
     "/": index,
-    "/api/health": () => Response.json({ ok: true }),
-    "/api/info": () =>
-      Response.json({ model: MODEL, tools: agent.tools.map((t) => ({ name: t.name, description: t.description })) }),
-    "/api/chat": {
-      POST: async (req) => {
-        const parsed = ChatBody.safeParse(await req.json().catch(() => null));
-        if (!parsed.success) return Response.json({ error: "Cuerpo inválido" }, { status: 400 });
-        const { sessionId, message } = parsed.data;
-        return streamTurn(sessionId, (a, s, emit) => a.send(s, message, emit));
-      },
-    },
-    "/api/confirm": {
-      POST: async (req) => {
-        const parsed = ConfirmBody.safeParse(await req.json().catch(() => null));
-        if (!parsed.success) return Response.json({ error: "Cuerpo inválido" }, { status: 400 });
-        const { sessionId, decisions } = parsed.data;
-        return streamTurn(sessionId, (a, s, emit) => a.resume(s, decisions, emit));
-      },
-    },
-    "/api/reset": {
-      POST: async (req) => {
-        const parsed = ResetBody.safeParse(await req.json().catch(() => null));
-        if (!parsed.success) return Response.json({ error: "Cuerpo inválido" }, { status: 400 });
-        sessions.reset(parsed.data.sessionId);
+    "/api/health": () => Response.json({ ok: true, provider: agente.llm.proveedor, model: agente.llm.modelo }),
+    "/api/herramientas": () =>
+      Response.json(agente.herramientas.map((h) => ({ nombre: h.nombre, descripcion: h.herramienta.description }))),
+    "/api/chat": { POST: chat },
+    "/api/sessions/:id": {
+      GET: (req) => historial(req.params.id),
+      DELETE: (req) => {
+        sesiones.eliminar(req.params.id);
         return Response.json({ ok: true });
       },
     },
   },
 });
 
-console.log(`Agente escuchando en ${server.url} (modelo ${MODEL})`);
-if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-  console.warn("Aviso: no hay ANTHROPIC_API_KEY; el chat fallará hasta configurarla (ver .env.example).");
+console.log(`Agente en ${servidor.url} · ${agente.llm.proveedor} ${agente.llm.modelo}`);
+if (!process.env.LLM_API_KEY) {
+  console.warn("Aviso: falta LLM_API_KEY; el chat no podrá responder (ver .env.example). demo.ts no la necesita.");
 }
