@@ -22,7 +22,7 @@ bun test                # ciclo del agente con un adaptador LLM guionizado
 | Variable | Uso | Por defecto |
 |---|---|---|
 | `LLM_PROVIDER` | Proveedor de lenguaje: `gemini` o `anthropic` | `gemini` |
-| `LLM_MODEL` | Modelo; vacío = el predeterminado del proveedor | `gemini-flash-latest` / `claude-opus-5-5` |
+| `LLM_MODEL` | Modelo; vacío = el predeterminado del proveedor | `gemini-3.5-flash` (respaldo automático a `gemini-3.5-flash-lite` si está saturado) / `claude-opus-5-5` |
 | `LLM_API_KEY` | Clave del proveedor. Solo vive en el entorno del backend: nunca en el repositorio, el front, los logs ni la API | — |
 | `LLM_TIMEOUT_MS` | Tiempo máximo de espera al proveedor | `120000` |
 | `MAX_ITERACIONES` | Rondas herramienta → modelo por turno | `25` |

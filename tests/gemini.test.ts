@@ -82,9 +82,32 @@ describe("AdaptadorGemini", () => {
     expect(r.fin).toBe("rechazo");
   });
 
+  test("si el modelo principal está saturado (503), responde el de respaldo", async () => {
+    const modelos: string[] = [];
+    const fetchFalso = (async (entrada: string | URL | Request) => {
+      const url = String(entrada);
+      modelos.push(url.includes("principal") ? "principal" : "respaldo");
+      if (url.includes("principal")) {
+        return new Response(JSON.stringify({ error: { code: 503, message: "high demand", status: "UNAVAILABLE" } }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const trozo = { candidates: [{ content: { role: "model", parts: [{ text: "hola" }] }, finishReason: "STOP" }] };
+      return new Response(`data: ${JSON.stringify(trozo)}\r\n\r\n`, { headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+    const adaptador = new AdaptadorGemini({ apiKey: "test", modelo: "principal", respaldo: ["respaldo"], fetch: fetchFalso });
+
+    const r = await adaptador.enviar([{ rol: "usuario", texto: "x" }], [], { sistema: "s" });
+
+    expect(r.texto).toBe("hola");
+    expect(modelos[0]).toBe("principal");
+    expect(modelos.at(-1)).toBe("respaldo");
+  });
+
   test("el límite de la capa gratuita se traduce a un mensaje claro", async () => {
     const { fetchFalso } = falsoFetch([], 429);
-    const adaptador = new AdaptadorGemini({ apiKey: "test", fetch: fetchFalso });
+    const adaptador = new AdaptadorGemini({ apiKey: "test", respaldo: [], fetch: fetchFalso });
     await expect(adaptador.enviar([{ rol: "usuario", texto: "x" }], [], { sistema: "s" })).rejects.toThrow("límite de uso gratuito");
   });
 

@@ -2,8 +2,14 @@ import { ApiError, type Content, FinishReason, type FunctionCall, GoogleGenAI, t
 import { type AdaptadorLLM, ErrorLLM, type HerramientaLLM, type Mensaje, type RespuestaLLM } from "./adapter";
 
 const PROVEEDOR = "gemini";
-/** Alias que Google mantiene apuntando al Flash vigente; se cambia con LLM_MODEL. */
-export const MODELO_GEMINI = "gemini-flash-latest";
+/** Modelo principal; se cambia con LLM_MODEL. */
+export const MODELO_GEMINI = "gemini-3.5-flash";
+/**
+ * Respaldo cuando el principal está saturado (503) o se agotó su cuota gratuita (429).
+ * En la capa gratuita los modelos más nuevos suelen saturarse en horas pico.
+ */
+export const RESPALDO_GEMINI = ["gemini-3.5-flash-lite"];
+const REINTENTABLES = new Set([429, 503]);
 /** Prefijo de los ids que genera el adaptador cuando Gemini no asigna uno a la llamada. */
 const ID_LOCAL = "local-";
 
@@ -17,6 +23,7 @@ const RECHAZOS = new Set<FinishReason>([
 
 export interface OpcionesGemini {
   modelo?: string;
+  respaldo?: string[];
   apiKey?: string;
   timeoutMs?: number;
   maxTokens?: number;
@@ -27,12 +34,14 @@ export interface OpcionesGemini {
 export class AdaptadorGemini implements AdaptadorLLM {
   readonly proveedor = PROVEEDOR;
   readonly modelo: string;
+  private readonly respaldo: string[];
   private readonly cliente: GoogleGenAI;
   private readonly tieneClave: boolean;
   private readonly maxTokens: number;
 
   constructor(opciones: OpcionesGemini) {
     this.modelo = opciones.modelo ?? MODELO_GEMINI;
+    this.respaldo = (opciones.respaldo ?? RESPALDO_GEMINI).filter((m) => m !== this.modelo);
     this.tieneClave = Boolean(opciones.apiKey);
     this.maxTokens = opciones.maxTokens ?? 16000;
     // La clave llega desde la variable de entorno; nunca se registra ni se devuelve en la API.
@@ -51,6 +60,32 @@ export class AdaptadorGemini implements AdaptadorLLM {
       throw new ErrorLLM("El servidor no tiene configurada la clave del proveedor de IA (LLM_API_KEY).");
     }
 
+    let ultimoError: unknown;
+    for (const modelo of [this.modelo, ...this.respaldo]) {
+      let emitioTexto = false;
+      const onTexto = (delta: string) => {
+        emitioTexto = true;
+        opciones.onTexto?.(delta);
+      };
+      try {
+        return await this.generar(modelo, mensajes, herramientas, { sistema: opciones.sistema, onTexto });
+      } catch (err) {
+        if (err instanceof ErrorLLM) throw err;
+        // Se pasa al siguiente modelo solo ante saturación o cuota, y si aún no se mostró texto al usuario.
+        if (emitioTexto || !(err instanceof ApiError) || !REINTENTABLES.has(err.status)) throw traducirError(err);
+        console.warn(`Gemini ${modelo} respondió ${err.status}; se intenta con el modelo de respaldo.`);
+        ultimoError = err;
+      }
+    }
+    throw traducirError(ultimoError);
+  }
+
+  private async generar(
+    modelo: string,
+    mensajes: Mensaje[],
+    herramientas: HerramientaLLM[],
+    opciones: { sistema: string; onTexto: (delta: string) => void },
+  ): Promise<RespuestaLLM> {
     // Se acumulan todas las partes tal como llegan: Gemini exige recibir de vuelta sus
     // firmas de razonamiento (`thoughtSignature`) en las mismas partes en que las envió.
     const partes: Part[] = [];
@@ -58,46 +93,42 @@ export class AdaptadorGemini implements AdaptadorLLM {
     let bloqueado = false;
     let uso = { prompt: 0, cache: 0, salida: 0 };
 
-    try {
-      const stream = await this.cliente.models.generateContentStream({
-        model: this.modelo,
-        contents: mensajes.map(aContenido),
-        config: {
-          systemInstruction: opciones.sistema,
-          maxOutputTokens: this.maxTokens,
-          tools: [
-            {
-              functionDeclarations: herramientas.map((h) => ({
-                name: h.nombre,
-                description: h.descripcion,
-                parametersJsonSchema: h.esquema,
-              })),
-            },
-          ],
-          // El ciclo del agente ejecuta las herramientas; el SDK no debe hacerlo por su cuenta.
-          automaticFunctionCalling: { disable: true },
-        },
-      });
+    const stream = await this.cliente.models.generateContentStream({
+      model: modelo,
+      contents: mensajes.map(aContenido),
+      config: {
+        systemInstruction: opciones.sistema,
+        maxOutputTokens: this.maxTokens,
+        tools: [
+          {
+            functionDeclarations: herramientas.map((h) => ({
+              name: h.nombre,
+              description: h.descripcion,
+              parametersJsonSchema: h.esquema,
+            })),
+          },
+        ],
+        // El ciclo del agente ejecuta las herramientas; el SDK no debe hacerlo por su cuenta.
+        automaticFunctionCalling: { disable: true },
+      },
+    });
 
-      for await (const trozo of stream) {
-        if (trozo.promptFeedback?.blockReason) bloqueado = true;
-        const candidato = trozo.candidates?.[0];
-        for (const parte of candidato?.content?.parts ?? []) {
-          partes.push(parte);
-          if (parte.text && !parte.thought) opciones.onTexto?.(parte.text);
-        }
-        if (candidato?.finishReason) finalizacion = candidato.finishReason;
-        const u = trozo.usageMetadata;
-        if (u) {
-          uso = {
-            prompt: u.promptTokenCount ?? 0,
-            cache: u.cachedContentTokenCount ?? 0,
-            salida: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0),
-          };
-        }
+    for await (const trozo of stream) {
+      if (trozo.promptFeedback?.blockReason) bloqueado = true;
+      const candidato = trozo.candidates?.[0];
+      for (const parte of candidato?.content?.parts ?? []) {
+        partes.push(parte);
+        if (parte.text && !parte.thought) opciones.onTexto(parte.text);
       }
-    } catch (err) {
-      throw traducirError(err);
+      if (candidato?.finishReason) finalizacion = candidato.finishReason;
+      const u = trozo.usageMetadata;
+      if (u) {
+        uso = {
+          prompt: u.promptTokenCount ?? 0,
+          cache: u.cachedContentTokenCount ?? 0,
+          salida: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0),
+        };
+      }
     }
 
     if (finalizacion === FinishReason.MALFORMED_FUNCTION_CALL) {
