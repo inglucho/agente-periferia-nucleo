@@ -6,7 +6,7 @@ Núcleo común de los agentes conversacionales de la prueba técnica de Periferi
 
 ```bash
 bun install
-cp .env.example .env    # completa LLM_API_KEY (solo la necesita el chat)
+cp .env.example .env    # completa LLM_API_KEY (gratis en https://aistudio.google.com/apikey)
 bun run dev             # http://localhost:3000
 ```
 
@@ -21,8 +21,8 @@ bun test                # ciclo del agente con un adaptador LLM guionizado
 
 | Variable | Uso | Por defecto |
 |---|---|---|
-| `LLM_PROVIDER` | Proveedor de lenguaje | `anthropic` |
-| `LLM_MODEL` | Modelo | `claude-opus-5-5` |
+| `LLM_PROVIDER` | Proveedor de lenguaje: `gemini` o `anthropic` | `gemini` |
+| `LLM_MODEL` | Modelo; vacío = el predeterminado del proveedor | `gemini-flash-latest` / `claude-opus-5-5` |
 | `LLM_API_KEY` | Clave del proveedor. Solo vive en el entorno del backend: nunca en el repositorio, el front, los logs ni la API | — |
 | `LLM_TIMEOUT_MS` | Tiempo máximo de espera al proveedor | `120000` |
 | `MAX_ITERACIONES` | Rondas herramienta → modelo por turno | `25` |
@@ -42,7 +42,7 @@ bun test                # ciclo del agente con un adaptador LLM guionizado
 ## Arquitectura
 
 ```
-web/ (chat)  ──POST /api/chat──▶  src/server.ts ──▶ core/agente.ts ──▶ llm/adapter.ts ──▶ llm/anthropic.ts
+web/ (chat)  ──POST /api/chat──▶  src/server.ts ──▶ core/agente.ts ──▶ llm/adapter.ts ──▶ llm/gemini.ts · llm/anthropic.ts
      ▲                                                   │
      └──────────── SSE: texto · llamada · resultado ─────┤
                                                          ▼
@@ -55,7 +55,7 @@ web/ (chat)  ──POST /api/chat──▶  src/server.ts ──▶ core/agente.
 | Conocimiento | `src/knowledge/*.md` | Reglas del proceso; se anexan al prompt |
 | Ejecución | `src/tools/<dominio>.ts` | Herramientas `{ description, args, execute }`; el modelo las ve como `<archivo>_<export>` |
 | Ciclo del agente | `src/core/agente.ts` | Bucle con tope de iteraciones y de tokens, confirmación y bitácora |
-| Proveedor LLM | `src/llm/` | Interfaz `enviar(mensajes, herramientas)` y una implementación por proveedor |
+| Proveedor LLM | `src/llm/` | Interfaz `enviar(mensajes, herramientas)` con dos implementaciones: Gemini (por defecto, capa gratuita) y Anthropic. Se cambia con `LLM_PROVIDER` sin tocar el ciclo |
 
 **Confirmación humana (CA3).** Las herramientas de escritura aceptan `confirmado`. Sin él, responden con una solicitud de confirmación; el agente cierra el turno con una pregunta y el chat lo resalta. El backend solo deja pasar `confirmado: true` si el mensaje inmediatamente posterior del usuario es una confirmación explícita, aunque el modelo intente usarlo por su cuenta.
 

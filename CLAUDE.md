@@ -16,7 +16,7 @@ Antes de cada commit: `bun run typecheck && bun test && bun run demo.ts`.
 - `agent/prompt.md`: comportamiento. `src/knowledge/*.md`: conocimiento del proceso. `src/tools/<dominio>.ts`: ejecución.
 - `src/dominio.ts`: único archivo que conecta el dominio (import de herramientas + prefijo).
 - `src/core/`: ciclo del agente, contrato de herramientas, confirmación, sesiones, bitácora. Sin dependencias de un proveedor LLM ni de un dominio.
-- `src/llm/`: interfaz `AdaptadorLLM` y una implementación por proveedor.
+- `src/llm/`: interfaz `AdaptadorLLM` con implementaciones de Gemini (por defecto, gratuita) y Anthropic. Leer los tipos del SDK instalado antes de usar su API.
 - `web/`: chat en TypeScript sin framework, empaquetado por Bun.
 
 ## Contrato de herramientas (PRD 6.2)

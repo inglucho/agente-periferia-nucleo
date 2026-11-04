@@ -5,9 +5,10 @@ type Bloque = Anthropic.Beta.BetaContentBlockParam;
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 const PROVEEDOR = "anthropic";
+export const MODELO_ANTHROPIC = "claude-opus-5-5";
 
 export interface OpcionesAnthropic {
-  modelo: string;
+  modelo?: string;
   effort?: Effort;
   maxTokens?: number;
   timeoutMs?: number;
@@ -23,7 +24,7 @@ export class AdaptadorAnthropic implements AdaptadorLLM {
   private readonly tieneClave: boolean;
 
   constructor(opciones: OpcionesAnthropic) {
-    this.modelo = opciones.modelo;
+    this.modelo = opciones.modelo ?? MODELO_ANTHROPIC;
     this.effort = opciones.effort ?? "medium";
     this.maxTokens = opciones.maxTokens ?? 32000;
     this.tieneClave = Boolean(opciones.apiKey);

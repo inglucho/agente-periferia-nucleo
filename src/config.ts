@@ -10,8 +10,9 @@ export const config = {
   /** Raíz del proyecto: desde aquí se resuelven `agent/`, `fixtures/` y `out/`. */
   directorio: fileURLToPath(new URL("..", import.meta.url)),
   puerto: entero("PORT", 3000),
-  proveedor: process.env.LLM_PROVIDER ?? "anthropic",
-  modelo: process.env.LLM_MODEL ?? "claude-opus-5-5",
+  proveedor: process.env.LLM_PROVIDER ?? "gemini",
+  /** Si no se define, cada adaptador usa su modelo por defecto. */
+  modelo: process.env.LLM_MODEL || undefined,
   timeoutMs: entero("LLM_TIMEOUT_MS", 120_000),
   maxIteraciones: entero("MAX_ITERACIONES", 25),
   maxTokensSesion: entero("MAX_TOKENS_SESION", 500_000),
