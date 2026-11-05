@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { OpcionesBitacora } from "./core/bitacora";
 import { registrar } from "./core/herramientas";
+export { presentacion } from "./presentacion";
 import * as ejemplo from "./tools/ejemplo";
 
 /**
@@ -12,16 +13,6 @@ export const herramientas = registrar("ejemplo", ejemplo);
 
 export const opcionesBitacora: OpcionesBitacora = {};
 
-/** Cómo se presenta el agente en el chat: título, descripción y sugerencias para empezar. */
-export const presentacion = {
-  reto: "Núcleo",
-  titulo: "Agente de ejemplo",
-  descripcion: "Dominio de ejemplo para probar el núcleo: consulta y aprueba registros; los montos altos piden confirmación.",
-  sugerencias: [
-    { titulo: "Consultar", texto: "Consulta el registro R-001." },
-    { titulo: "Aprobar con confirmación", texto: "Consulta el registro R-002 y apruébalo." },
-  ],
-};
 
 /**
  * System prompt = comportamiento (`agent/prompt.md`) + conocimiento del proceso
