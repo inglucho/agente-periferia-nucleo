@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import type { OpcionesBitacora } from "./core/bitacora";
 import { registrar } from "./core/herramientas";
 import * as ejemplo from "./tools/ejemplo";
 
@@ -8,6 +9,19 @@ import * as ejemplo from "./tools/ejemplo";
  * el import de herramientas y su prefijo; el prompt y el conocimiento son archivos.
  */
 export const herramientas = registrar("ejemplo", ejemplo);
+
+export const opcionesBitacora: OpcionesBitacora = {};
+
+/** Cómo se presenta el agente en el chat: título, descripción y sugerencias para empezar. */
+export const presentacion = {
+  reto: "Núcleo",
+  titulo: "Agente de ejemplo",
+  descripcion: "Dominio de ejemplo para probar el núcleo: consulta y aprueba registros; los montos altos piden confirmación.",
+  sugerencias: [
+    { titulo: "Consultar", texto: "Consulta el registro R-001." },
+    { titulo: "Aprobar con confirmación", texto: "Consulta el registro R-002 y apruébalo." },
+  ],
+};
 
 /**
  * System prompt = comportamiento (`agent/prompt.md`) + conocimiento del proceso
